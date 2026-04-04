@@ -4,7 +4,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-This is a **reverse-engineered / decompiled** version of Anthropic's official Claude Code CLI tool. The goal is to restore core functionality while trimming secondary capabilities. Many modules are stubbed or feature-flagged off. The codebase has ~1341 tsc errors from decompilation (mostly `unknown`/`never`/`{}` types) — these do **not** block Bun runtime execution.
+This project is an **Agentic Terminal Runtime** built around the Claude AI infrastructure. Far more than a simple command-line script, it serves as a robust TUI (Terminal User Interface) and Agent Runtime Container. It is designed to manage complex multi-turn conversation states, dynamically orchestrate MCP (Model Context Protocol) tools, spawn parallel subagents, and handle recursive context compression.
+
+The codebase provides a highly hackable, high-performance local AI assistant running natively on the Bun engine, enhanced with custom capabilities like flexible authentication, Bing web search, and integrated modular workflows. 
+
+**Important**: Requires Bun >= 1.2.0 (recommend latest via `bun upgrade`).
 
 ## Commands
 
@@ -56,22 +60,26 @@ bun run format            # format all src/
 
 ### Core Loop
 
-- **`src/query.ts`** — The main API query function. Sends messages to Claude API, handles streaming responses, processes tool calls, and manages the conversation turn loop.
-- **`src/QueryEngine.ts`** — Higher-level orchestrator wrapping `query()`. Manages conversation state, compaction, file history snapshots, attribution, and turn-level bookkeeping. Used by the REPL screen.
-- **`src/screens/REPL.tsx`** — The interactive REPL screen (React/Ink component). Handles user input, message display, tool permission prompts, and keyboard shortcuts.
+- **`src/query.ts`** — Core conversation state machine. Manages multi-turn iteration, error recovery, tool execution orchestration. Does NOT handle user input parsing, session persistence, or permission checks — those are delegated via callbacks.
+- **`src/QueryEngine.ts`** — Session lifecycle manager wrapping `query()`. Owns `mutableMessages`, `readFileState`, `totalUsage` across turns. The `submitMessage()` method is the main entry point for one conversation turn. Does NOT execute tools or make API calls directly.
+- **`src/screens/REPL.tsx`** — Interactive TUI screen (React/Ink). Calls `queryEngine.submitMessage()` on user input. **Agency layer insertion point**: replace this call to wrap with `AgencyRuntime.run()`.
+- **`src/main.tsx`** — CLI bootstrap. Fast-path dispatch (--version, daemon, bridge). Does NOT handle conversation logic.
 
 ### API Layer
 
-- **`src/services/api/claude.ts`** — Core API client. Builds request params (system prompt, messages, tools, betas), calls the Anthropic SDK streaming endpoint, and processes `BetaRawMessageStreamEvent` events.
-- Supports multiple providers: Anthropic direct, AWS Bedrock, Google Vertex, Azure.
-- Provider selection in `src/utils/model/providers.ts`.
+- **`src/services/api/claude.ts`** — Core API client. Builds request params (system prompt, messages, tools, betas), calls the Anthropic SDK streaming endpoint, and processes `BetaRawMessageStreamEvent` events. Supports multiple providers: Anthropic direct, AWS Bedrock, Google Vertex, Azure. Provider selection in `src/utils/model/providers.ts`.
+- **`src/utils/api.ts`** — System prompt construction, tool schema conversion, `cache_control` injection. Key functions: `splitSysPromptPrefix()` (splits prompt into cacheable prefix + dynamic suffix), `appendSystemContext()` / `prependUserContext()`. **Agency layer insertion point**: inject `IDENTITY_ANCHOR` as first block here to lock activation pattern.
+- **`src/services/compact/`** — Context compression strategies (autocompact, microcompact, snip, reactive). Does NOT make API calls or execute tools.
+- **`src/services/mcp/`** — MCP protocol integration, server connections, resource management, OAuth. Does NOT handle tool execution or message orchestration.
 
 ### Tool System
 
-- **`src/Tool.ts`** — Tool interface definition (`Tool` type) and utilities (`findToolByName`, `toolMatchesName`).
-- **`src/tools.ts`** — Tool registry. Assembles the tool list; some tools are conditionally loaded via `feature()` flags or `process.env.USER_TYPE`.
-- **`src/tools/<ToolName>/`** — Each tool in its own directory (e.g., `BashTool`, `FileEditTool`, `GrepTool`, `AgentTool`).
-- Tools define: `name`, `description`, `inputSchema` (JSON Schema), `call()` (execution), and optionally a React component for rendering results.
+- **`src/Tool.ts`** — Tool interface (`Tool` type), `buildTool()` factory with safe defaults, `ToolUseContext` (the full execution context passed to every tool call), `findToolByName`, `toolMatchesName`.
+- **`src/tools.ts`** — Tool registry. `getAllBaseTools()` is the source of truth. `getTools()` filters by permission context and mode. `assembleToolPool()` merges built-in + MCP tools (sorted for prompt-cache stability). Conditional loading via `feature()` flags and `process.env.USER_TYPE`.
+- **`src/tools/<ToolName>/`** — Each tool in its own directory. Structure: `<Name>.ts` (logic) + `UI.tsx` (optional React renderer) + `prompt.ts` (description strings) + `constants.ts`.
+- Tools with feature flag gates: `SleepTool` (PROACTIVE/KAIROS), `WebBrowserTool` (WEB_BROWSER_TOOL), `MonitorTool` (MONITOR_TOOL), `RemoteTriggerTool` (AGENT_TRIGGERS_REMOTE), `SnipTool` (HISTORY_SNIP), `WorkflowTool` (WORKFLOW_SCRIPTS).
+- Tools gated by `USER_TYPE=ant`: `REPLTool`, `SuggestBackgroundPRTool`, `ConfigTool`, `TungstenTool`.
+- **AgentTool** — Spawns forked subagents with isolated context. Used for parallel exploration. The `agentId` in `ToolUseContext` distinguishes subagent calls from main thread.
 
 ### UI Layer (Ink)
 
@@ -82,18 +90,33 @@ bun run format            # format all src/
   - `Messages.tsx` / `MessageRow.tsx` — Conversation message rendering.
   - `PromptInput/` — User input handling.
   - `permissions/` — Tool permission approval UI.
-- Components use React Compiler runtime (`react/compiler-runtime`) — decompiled output has `_c()` memoization calls throughout.
+- Components use React Compiler runtime (`react/compiler-runtime`) for heavy memoization optimization.
 
 ### State Management
 
-- **`src/state/AppState.tsx`** — Central app state type and context provider. Contains messages, tools, permissions, MCP connections, etc.
-- **`src/state/store.ts`** — Zustand-style store for AppState.
-- **`src/bootstrap/state.ts`** — Module-level singletons for session-global state (session ID, CWD, project root, token counts).
+- **`src/state/AppState.tsx`** — Central React state container (`DeepImmutable` type). Contains settings, tasks, MCP state, notifications, tool permission context. Read via `useAppState(selector)`, write via `useSetAppState()`. Does NOT own message history or file content.
+- **`src/state/store.ts`** — Simple pub-sub store with `Object.is` dedup. Used by AppState.
+- **`src/bootstrap/state.ts`** — Session-global singletons initialized once at startup. Owns: `sessionId`, `projectRoot`, `cwd`, `totalCostUSD`, `modelUsage`, `lastInteractionTime`, telemetry providers, `sessionCronTasks`. Accessed via plain getter/setter functions (not React hooks). Does NOT own UI interaction state.
 
 ### Context & System Prompt
 
-- **`src/context.ts`** — Builds system/user context for the API call (git status, date, CLAUDE.md contents, memory files).
-- **`src/utils/claudemd.ts`** — Discovers and loads CLAUDE.md files from project hierarchy.
+- **`src/context.ts`** — Builds system/user context for the API call (git status, date, CLAUDE.md contents, memory files). Both `getSystemContext()` and `getUserContext()` are memoized — call `setSystemPromptInjection()` to bust the cache. Does NOT participate in the conversation loop.
+- **`src/utils/claudemd.ts`** — Discovers and loads CLAUDE.md files from project hierarchy. `getMemoryFiles()` auto-discovers `~/.claude/**/*.md` — **writing files here is the zero-modification way to inject persistent context into every conversation**.
+- **`src/memdir/`** — Memory directory management. `loadMemoryPrompt()` loads structured memory files into context.
+
+### Module Boundaries (Quick Reference)
+
+| Module | Owns | Does NOT own |
+|--------|------|-------------|
+| `query.ts` | Turn state machine, tool orchestration | User input, session persistence, permissions |
+| `QueryEngine.ts` | Session state across turns, message history | API calls, tool execution, compression decisions |
+| `REPL.tsx` | TUI rendering, user input, keyboard shortcuts | Conversation logic, API calls |
+| `utils/api.ts` | System prompt construction, cache_control injection | API calls, message flow, MCP connections |
+| `services/api/` | API client, error handling, provider selection | Message orchestration, tool execution |
+| `services/compact/` | Context compression, token optimization | API calls, tool execution |
+| `services/mcp/` | MCP connections, resource management, auth | Tool execution, message orchestration |
+| `context.ts` | Static context building (git, CLAUDE.md) | Conversation loop participation |
+| `tools.ts` | Tool registry assembly | Tool execution (delegated to each tool's `call()`) |
 
 ### Feature Flag System
 
@@ -138,9 +161,8 @@ Feature flags control which functionality is enabled at runtime. The system work
 
 ## Working with This Codebase
 
-- **Don't try to fix all tsc errors** — they're from decompilation and don't affect runtime.
 - **Feature flags** — 默认全部关闭（`feature()` 返回 `false`）。启用方式见上方 Feature Flag System 章节。不要在 `cli.tsx` 中重定义 `feature` 函数。
-- **React Compiler output** — Components have decompiled memoization boilerplate (`const $ = _c(N)`). This is normal.
+- **React Compiler output** — Components use compiler memoization boilerplate (`const $ = _c(N)`). This is expected.
 - **`bun:bundle` import** — `import { feature } from 'bun:bundle'` 是 Bun 内置模块，由运行时/构建器解析。不要用自定义函数替代它。
 - **`src/` path alias** — tsconfig maps `src/*` to `./src/*`. Imports like `import { ... } from 'src/utils/...'` are valid.
 - **MACRO defines** — 集中管理在 `scripts/defines.ts`。Dev mode 通过 `bun -d` 注入，build 通过 `Bun.build({ define })` 注入。修改版本号等常量只改这个文件。
