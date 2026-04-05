@@ -12,6 +12,7 @@ export type AgencyThought = {
   type: ThoughtType
   tick: number
   used: boolean
+  valuable: boolean
 }
 
 type ThoughtPoolFile = {
@@ -64,11 +65,12 @@ export function appendThought(
     type: thought.type,
     tick: thought.tick,
     used: false,
+    valuable: thought.valuable,
   }
   thoughtPool = [...thoughtPool, nextThought].slice(-MAX_THOUGHTS)
   persistThoughtPool()
   logForDebugging(
-    `[agency:L5:thought-pool] appended type=${nextThought.type} tick=${nextThought.tick} size=${thoughtPool.length}`,
+    `[agency:L5:thought-pool] appended type=${nextThought.type} valuable=${nextThought.valuable} tick=${nextThought.tick} size=${thoughtPool.length}`,
   )
 }
 
@@ -84,26 +86,36 @@ export function removeThought(thoughtId: string): void {
 }
 
 export function drainThoughtsForWakeContext(currentTick: number): string[] {
-  const drained = thoughtPool.filter(thought => !thought.used)
-  if (drained.length === 0) {
+  // 返回所有念头，不标记 used（让念头可以被多次读取）
+  if (thoughtPool.length === 0) {
     return []
   }
 
-  thoughtPool = thoughtPool.map(thought =>
-    thought.used ? thought : { ...thought, used: true },
-  )
-  persistThoughtPool()
   logForDebugging(
-    `[agency:L5:thought-pool] drained count=${drained.length} tick=${currentTick}`,
+    `[agency:L5:thought-pool] drained count=${thoughtPool.length} tick=${currentTick}`,
   )
-  return drained.map(thought => `[thought:${thought.type}] ${thought.thought}`)
+  return thoughtPool.map(thought => `[thought:${thought.type}${thought.valuable ? '+' : '?'}] ${thought.thought}`)
 }
 
 export function pruneExpiredThoughts(currentTick: number): void {
+  // 优先删除 valuable=false 的念头
+  const trivialThoughts = thoughtPool.filter(t => !t.valuable)
+  const valuableThoughts = thoughtPool.filter(t => t.valuable)
+
+  // 如果超过 MAX_THOUGHTS，优先删除平庸念头
+  if (thoughtPool.length > MAX_THOUGHTS) {
+    const toRemove = thoughtPool.length - MAX_THOUGHTS
+    const removedTrivial = trivialThoughts.slice(0, toRemove)
+    thoughtPool = thoughtPool.filter(t => !removedTrivial.includes(t))
+    persistThoughtPool()
+    logForDebugging(
+      `[agency:L5:thought-pool] pruned_by_size removed=${toRemove} (trivial) size=${thoughtPool.length}`,
+    )
+    return
+  }
+
+  // 删除过期的念头（超过 MAX_UNUSED_AGE_TICKS）
   const nextThoughtPool = thoughtPool.filter(thought => {
-    if (thought.used) {
-      return false
-    }
     return currentTick - thought.tick <= MAX_UNUSED_AGE_TICKS
   })
 
@@ -115,7 +127,7 @@ export function pruneExpiredThoughts(currentTick: number): void {
   thoughtPool = nextThoughtPool
   persistThoughtPool()
   logForDebugging(
-    `[agency:L5:thought-pool] pruned removed=${removed} tick=${currentTick}`,
+    `[agency:L5:thought-pool] pruned_by_age removed=${removed} tick=${currentTick} size=${thoughtPool.length}`,
   )
 }
 

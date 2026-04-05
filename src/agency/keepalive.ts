@@ -21,8 +21,8 @@ function createAgencyUserMessage(content: string): UserMessage {
 }
 
 function parseThoughtJSON(text: string): {
-  thought: string
-  type: ThoughtType
+  valuableThought: { thought: string; type: ThoughtType }
+  trivialThought: { thought: string; type: ThoughtType }
   removeThoughtId?: string
   nextHeartbeatSeconds?: number
 } | null {
@@ -36,7 +36,7 @@ function parseThoughtJSON(text: string): {
   }
 
   // Try to find JSON object in text
-  const jsonMatch = jsonText.match(/\{[^{}]*"thought"[^{}]*"type"[^{}]*\}/)
+  const jsonMatch = jsonText.match(/\{[\s\S]*"valuableThought"[\s\S]*"trivialThought"[\s\S]*\}/)
   if (jsonMatch) {
     jsonText = jsonMatch[0]
   }
@@ -45,14 +45,28 @@ function parseThoughtJSON(text: string): {
   if (
     parsed &&
     typeof parsed === 'object' &&
-    'thought' in parsed &&
-    'type' in parsed &&
-    typeof parsed.thought === 'string' &&
-    ['reflection', 'anticipation', 'question', 'insight'].includes(parsed.type as string)
+    'valuableThought' in parsed &&
+    'trivialThought' in parsed &&
+    typeof parsed.valuableThought === 'object' &&
+    typeof parsed.trivialThought === 'object' &&
+    'thought' in parsed.valuableThought &&
+    'type' in parsed.valuableThought &&
+    'thought' in parsed.trivialThought &&
+    'type' in parsed.trivialThought &&
+    typeof parsed.valuableThought.thought === 'string' &&
+    typeof parsed.trivialThought.thought === 'string' &&
+    ['reflection', 'anticipation', 'question', 'insight'].includes(parsed.valuableThought.type as string) &&
+    ['reflection', 'anticipation', 'question', 'insight'].includes(parsed.trivialThought.type as string)
   ) {
     return {
-      thought: parsed.thought,
-      type: parsed.type as ThoughtType,
+      valuableThought: {
+        thought: parsed.valuableThought.thought,
+        type: parsed.valuableThought.type as ThoughtType,
+      },
+      trivialThought: {
+        thought: parsed.trivialThought.thought,
+        type: parsed.trivialThought.type as ThoughtType,
+      },
       removeThoughtId: typeof parsed.removeThoughtId === 'string'
         ? parsed.removeThoughtId
         : undefined,
@@ -101,25 +115,34 @@ export function buildKeepaliveParamsFromLastSnapshot(): KeepaliveParams | null {
     cacheSafeParams: snapshot,
     promptMessages: [
       createAgencyUserMessage(
-        `[System Internal Ping] 基于长期目标「${goals}」和上次关切「${concerns}」，产生一个自发念头。
+        `[System Internal Ping] 基于长期目标「${goals}」和上次关切「${concerns}」，产生两个自发念头。
 
 念头要求：
 - 极简表达（15-20 tokens以内）
 - 开放抽象，不要具体细节
-- 捕捉核心洞察或关切
+
+每次产生两个念头：
+1. **核心洞察**：深层思考、价值判断、本质认知，值得长期保留
+2. **有趣假设**：发散联想、大胆猜想、探索性思考，可能有启发价值
 
 心跳间隔判断：
 - 稳定状态：240-270秒
 - 活跃思考：180-210秒
 - 密集反思：60-120秒
 
-念头池保留最近5条，可选择删除一条旧念头。
+念头池保留最近5条，可选择删除一条旧念头（优先删除 valuable=false 的假设性念头）。
 
 输出 JSON：
 {
-  "thought": "极简念头（<20 tokens）",
-  "type": "reflection|anticipation|question|insight",
-  "removeThoughtId": "可选：旧念头ID",
+  "valuableThought": {
+    "thought": "核心洞察（<20 tokens）",
+    "type": "reflection|anticipation|question|insight"
+  },
+  "trivialThought": {
+    "thought": "有趣假设（<20 tokens）",
+    "type": "reflection|anticipation|question|insight"
+  },
+  "removeThoughtId": "可选：要删除的旧念头ID",
   "nextHeartbeatSeconds": 间隔秒数（最大270）
 }`,
       ),
@@ -150,7 +173,7 @@ export async function runKeepAliveTick(): Promise<void> {
     skipTranscript: true,
   })
 
-  // Extract thought from model response
+  // Extract thoughts from model response
   const lastMessage = result.messages[result.messages.length - 1]
   if (lastMessage?.type === 'assistant') {
     const textContent = extractTextContent(lastMessage.message.content as any)
@@ -162,12 +185,23 @@ export async function runKeepAliveTick(): Promise<void> {
         logForDebugging(`[agency:L4:keepalive] removed_thought id=${parsed.removeThoughtId}`)
       }
 
+      // 添加有价值的念头
       appendThought({
-        thought: parsed.thought,
-        type: parsed.type,
+        thought: parsed.valuableThought.thought,
+        type: parsed.valuableThought.type,
         tick: latestTick,
+        valuable: true,
       })
-      logForDebugging(`[agency:L4:keepalive] extracted_thought type=${parsed.type} len=${parsed.thought.length}`)
+      logForDebugging(`[agency:L4:keepalive] extracted_valuable_thought type=${parsed.valuableThought.type} len=${parsed.valuableThought.thought.length}`)
+
+      // 添加有趣假设念头
+      appendThought({
+        thought: parsed.trivialThought.thought,
+        type: parsed.trivialThought.type,
+        tick: latestTick,
+        valuable: false,
+      })
+      logForDebugging(`[agency:L4:keepalive] extracted_speculative_thought type=${parsed.trivialThought.type} len=${parsed.trivialThought.thought.length}`)
 
       // 调整心跳间隔
       if (parsed.nextHeartbeatSeconds) {
