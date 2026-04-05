@@ -1,3 +1,4 @@
+import { getWakeContext } from './agency/index.js'
 import { feature } from 'bun:bundle'
 import type { ContentBlockParam } from '@anthropic-ai/sdk/resources/messages.mjs'
 import { randomUUID } from 'crypto'
@@ -58,6 +59,7 @@ import {
   cloneFileStateCache,
   type FileStateCache,
 } from './utils/fileStateCache.js'
+import { logForDebugging } from './utils/debug.js'
 import { headlessProfilerCheckpoint } from './utils/headlessProfiler.js'
 import { registerStructuredOutputEnforcement } from './utils/hooks/hookHelpers.js'
 import { getInMemoryErrors } from './utils/log.js'
@@ -115,8 +117,8 @@ const getCoordinatorUserContext: (
   mcpClients: ReadonlyArray<{ name: string }>,
   scratchpadDir?: string,
 ) => { [k: string]: string } = feature('COORDINATOR_MODE')
-  ? require('./coordinator/coordinatorMode.js').getCoordinatorUserContext
-  : () => ({})
+    ? require('./coordinator/coordinatorMode.js').getCoordinatorUserContext
+    : () => ({})
 /* eslint-enable @typescript-eslint/no-require-imports */
 
 // Dead code elimination: conditional import for snip compaction
@@ -321,10 +323,25 @@ export class QueryEngine {
         ? await loadMemoryPrompt()
         : null
 
+    const agencyPromptBlocks =
+      customPrompt === undefined
+        ? [
+          ...((() => {
+            const wakeContext = getWakeContext()
+            return wakeContext ? [wakeContext] : []
+          })()),
+        ]
+        : []
+
+    logForDebugging(
+      `[agency:L1-L2:query-engine] custom_prompt=${customPrompt !== undefined} agency_blocks=${agencyPromptBlocks.length} has_wake=${agencyPromptBlocks.some(block => block.startsWith('[T='))}`,
+    )
+
     const systemPrompt = asSystemPrompt([
       ...(customPrompt !== undefined ? [customPrompt] : defaultSystemPrompt),
       ...(memoryMechanicsPrompt ? [memoryMechanicsPrompt] : []),
       ...(appendSystemPrompt ? [appendSystemPrompt] : []),
+      ...agencyPromptBlocks,
     ])
 
     // Register function hook for structured output enforcement
@@ -347,7 +364,7 @@ export class QueryEngine {
       setMessages: fn => {
         this.mutableMessages = fn(this.mutableMessages)
       },
-      onChangeAPIKey: () => {},
+      onChangeAPIKey: () => { },
       handleElicitation: this.config.handleElicitation,
       options: {
         commands,
@@ -374,8 +391,8 @@ export class QueryEngine {
       loadedNestedMemoryPaths: this.loadedNestedMemoryPaths,
       dynamicSkillDirTriggers: new Set<string>(),
       discoveredSkillNames: this.discoveredSkillNames,
-      setInProgressToolUseIDs: () => {},
-      setResponseLength: () => {},
+      setInProgressToolUseIDs: () => { },
+      setResponseLength: () => { },
       updateFileHistoryState: (
         updater: (prev: FileHistoryState) => FileHistoryState,
       ) => {
@@ -419,7 +436,7 @@ export class QueryEngine {
     } = await processUserInput({
       input: prompt,
       mode: 'prompt',
-      setToolJSX: () => {},
+      setToolJSX: () => { },
       context: {
         ...processUserInputContext,
         messages: this.mutableMessages,
@@ -494,8 +511,8 @@ export class QueryEngine {
     // model (from slash commands).
     processUserInputContext = {
       messages,
-      setMessages: () => {},
-      onChangeAPIKey: () => {},
+      setMessages: () => { },
+      onChangeAPIKey: () => { },
       handleElicitation: this.config.handleElicitation,
       options: {
         commands,
@@ -522,8 +539,8 @@ export class QueryEngine {
       loadedNestedMemoryPaths: this.loadedNestedMemoryPaths,
       dynamicSkillDirTriggers: new Set<string>(),
       discoveredSkillNames: this.discoveredSkillNames,
-      setInProgressToolUseIDs: () => {},
-      setResponseLength: () => {},
+      setInProgressToolUseIDs: () => { },
+      setResponseLength: () => { },
       updateFileHistoryState: processUserInputContext.updateFileHistoryState,
       updateAttributionState: processUserInputContext.updateAttributionState,
       setSDKStatus,
@@ -851,7 +868,7 @@ export class QueryEngine {
             void recordTranscript(messages)
           }
 
-          const attachment = msg.attachment as { type: string; data?: unknown; turnCount?: number; maxTurns?: number; prompt?: string; source_uuid?: string; [key: string]: unknown }
+          const attachment = msg.attachment as { type: string; data?: unknown; turnCount?: number; maxTurns?: number; prompt?: string; source_uuid?: string;[key: string]: unknown }
 
           // Extract structured output from StructuredOutput tool calls
           if (attachment.type === 'structured_output') {
@@ -1300,12 +1317,12 @@ export async function* ask({
     orphanedPermission,
     ...(feature('HISTORY_SNIP')
       ? {
-          snipReplay: (yielded: Message, store: Message[]) => {
-            if (!snipProjection!.isSnipBoundaryMessage(yielded))
-              return undefined
-            return snipModule!.snipCompactIfNeeded(store, { force: true })
-          },
-        }
+        snipReplay: (yielded: Message, store: Message[]) => {
+          if (!snipProjection!.isSnipBoundaryMessage(yielded))
+            return undefined
+          return snipModule!.snipCompactIfNeeded(store, { force: true })
+        },
+      }
       : {}),
   })
 

@@ -4,6 +4,7 @@ import ignore from 'ignore'
 import memoize from 'lodash-es/memoize.js'
 import { homedir, tmpdir } from 'os'
 import { join, normalize, posix, sep } from 'path'
+import { isAllowedAgencyFilePath } from 'src/agency/paths.js'
 import { hasAutoMemPathOverride, isAutoMemPath } from 'src/memdir/paths.js'
 import { isAgentMemoryPath } from 'src/tools/AgentTool/agentMemory.js'
 import {
@@ -1581,6 +1582,18 @@ export function checkEditableInternalPath(
     }
   }
 
+  // Agency state files (~/.claude/agency/* exact whitelist only)
+  if (isAllowedAgencyFilePath(normalizedPath)) {
+    return {
+      behavior: 'allow',
+      updatedInput: input,
+      decisionReason: {
+        type: 'other',
+        reason: 'Agency state files are allowed for writing',
+      },
+    }
+  }
+
   // .claude/launch.json — desktop preview config (dev server command + port).
   // The desktop's preview_start MCP tool instructs Claude to create/update
   // this file as part of the preview workflow. Without this carve-out the
@@ -1721,6 +1734,18 @@ export function checkReadableInternalPath(
       decisionReason: {
         type: 'other',
         reason: 'auto memory files are allowed for reading',
+      },
+    }
+  }
+
+  // Agency state files (~/.claude/agency/* exact whitelist only)
+  if (isAllowedAgencyFilePath(normalizedPath)) {
+    return {
+      behavior: 'allow',
+      updatedInput: input,
+      decisionReason: {
+        type: 'other',
+        reason: 'Agency state files are allowed for reading',
       },
     }
   }

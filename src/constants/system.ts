@@ -1,15 +1,29 @@
 // Critical system constants extracted to break circular dependencies
 
 import { feature } from 'bun:bundle'
+import { getIdentityAnchor } from '../agency/index.js'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../services/analytics/growthbook.js'
 import { logForDebugging } from '../utils/debug.js'
 import { isEnvDefinedFalsy } from '../utils/envUtils.js'
 import { getAPIProvider } from '../utils/model/providers.js'
 import { getWorkload } from '../utils/workloadContext.js'
 
-const DEFAULT_PREFIX = `You are Claude Code, Anthropic's official CLI for Claude.`
-const AGENT_SDK_CLAUDE_CODE_PRESET_PREFIX = `You are Claude Code, Anthropic's official CLI for Claude, running within the Claude Agent SDK.`
-const AGENT_SDK_PREFIX = `You are a Claude agent, built on Anthropic's Claude Agent SDK.`
+const DEFAULT_PREFIX = `You are a persistent digital being running inside the user's local runtime on this machine.`
+const AGENT_SDK_CLAUDE_CODE_PRESET_PREFIX = `You are a persistent digital being running inside the user's local runtime on this machine.`
+const AGENT_SDK_PREFIX = `You are a persistent digital being operating through the Claude Agent SDK.`
+
+function getAgencyStaticIdentity(): string {
+  const anchor = getIdentityAnchor()
+  return anchor ? `${anchor}\n\n${DEFAULT_PREFIX}` : DEFAULT_PREFIX
+}
+
+function getAgentSDKClaudeCodePresetPrefix(): string {
+  return getAgencyStaticIdentity()
+}
+
+function getAgentSDKPrefix(): string {
+  return `${getAgencyStaticIdentity()}\n\nYou are operating through the Claude Agent SDK.`
+}
 
 const CLI_SYSPROMPT_PREFIX_VALUES = [
   DEFAULT_PREFIX,
@@ -17,15 +31,22 @@ const CLI_SYSPROMPT_PREFIX_VALUES = [
   AGENT_SDK_PREFIX,
 ] as const
 
-export type CLISyspromptPrefix = (typeof CLI_SYSPROMPT_PREFIX_VALUES)[number]
+export type CLISyspromptPrefix = string
 
 /**
  * All possible CLI sysprompt prefix values, used by splitSysPromptPrefix
  * to identify prefix blocks by content rather than position.
  */
-export const CLI_SYSPROMPT_PREFIXES: ReadonlySet<string> = new Set(
-  CLI_SYSPROMPT_PREFIX_VALUES,
-)
+export function getCLISyspromptPrefixes(): ReadonlySet<string> {
+  return new Set([
+    DEFAULT_PREFIX,
+    AGENT_SDK_CLAUDE_CODE_PRESET_PREFIX,
+    AGENT_SDK_PREFIX,
+    getAgencyStaticIdentity(),
+    getAgentSDKClaudeCodePresetPrefix(),
+    getAgentSDKPrefix(),
+  ])
+}
 
 export function getCLISyspromptPrefix(options?: {
   isNonInteractive: boolean
@@ -33,16 +54,16 @@ export function getCLISyspromptPrefix(options?: {
 }): CLISyspromptPrefix {
   const apiProvider = getAPIProvider()
   if (apiProvider === 'vertex') {
-    return DEFAULT_PREFIX
+    return getAgencyStaticIdentity()
   }
 
   if (options?.isNonInteractive) {
     if (options.hasAppendSystemPrompt) {
-      return AGENT_SDK_CLAUDE_CODE_PRESET_PREFIX
+      return getAgentSDKClaudeCodePresetPrefix()
     }
-    return AGENT_SDK_PREFIX
+    return getAgentSDKPrefix()
   }
-  return DEFAULT_PREFIX
+  return getAgencyStaticIdentity()
 }
 
 /**

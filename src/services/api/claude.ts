@@ -1364,6 +1364,11 @@ async function* queryModel(
     skipGlobalCacheForSystemPrompt: needsToolBasedCacheMarker,
     querySource: options.querySource,
   })
+
+  logForDebugging(
+    `[api] final systemPrompt before send\n${systemPrompt.join('\n\n')}`,
+  )
+
   const useBetas = betas.length > 0
 
   // Build minimal context for detailed tracing (when beta tracing is enabled)

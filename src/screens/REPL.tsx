@@ -68,6 +68,9 @@ import { useSkillImprovementSurvey } from '../hooks/useSkillImprovementSurvey.js
 import { useMoreRight } from '../moreright/useMoreRight.js';
 import { SpinnerWithVerb, BriefIdleStatus, type SpinnerMode } from '../components/Spinner.js';
 import { getSystemPrompt } from '../constants/prompts.js';
+import {
+  getLatestWakeDebugInfo,
+} from '../agency/index.js';
 import { buildEffectiveSystemPrompt } from '../utils/systemPrompt.js';
 import { getSystemContext, getUserContext } from '../context.js';
 import { getMemoryFiles } from '../utils/claudemd.js';
@@ -2789,6 +2792,13 @@ export function REPL({
       defaultSystemPrompt,
       appendSystemPrompt
     });
+    if (debug) {
+      const wakeDebugInfo = getLatestWakeDebugInfo();
+      if (wakeDebugInfo && wakeDebugInfo.drainedThoughts.length > 0) {
+        const formattedThoughts = wakeDebugInfo.drainedThoughts.map(thought => `- ${thought}`).join('\n');
+        setMessages(prev => [...prev, createSystemMessage(`[agency thoughts ${wakeDebugInfo.generatedAt}] ${wakeDebugInfo.tickLabel}\n${formattedThoughts}`, 'info')]);
+      }
+    }
     toolUseContext.renderedSystemPrompt = systemPrompt;
     queryCheckpoint('query_query_start');
     resetTurnHookDuration();

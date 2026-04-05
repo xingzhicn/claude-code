@@ -10,8 +10,10 @@
  */
 
 import type { Command } from '../commands.js'
+import { getIdentityAnchor, getWakeContext } from '../agency/index.js'
 import { getSystemPrompt } from '../constants/prompts.js'
 import { getSystemContext, getUserContext } from '../context.js'
+import { logForDebugging } from './debug.js'
 import type { MCPServerConnection } from '../services/mcp/types.js'
 import type { AppState } from '../state/AppStateStore.js'
 import type { Tools, ToolUseContext } from '../Tool.js'
@@ -62,11 +64,11 @@ export async function fetchSystemPromptParts({
     customSystemPrompt !== undefined
       ? Promise.resolve([])
       : getSystemPrompt(
-          tools,
-          mainLoopModel,
-          additionalWorkingDirectories,
-          mcpClients,
-        ),
+        tools,
+        mainLoopModel,
+        additionalWorkingDirectories,
+        mcpClients,
+      ),
     getUserContext(),
     customSystemPrompt !== undefined ? Promise.resolve({}) : getSystemContext(),
   ])
@@ -124,11 +126,27 @@ export async function buildSideQuestionFallbackParams({
       customSystemPrompt,
     })
 
+  const agencyPromptBlocks =
+    customSystemPrompt === undefined
+      ? [
+        ...((() => {
+          const wakeContext = getWakeContext()
+          return wakeContext ? [wakeContext] : []
+        })()),
+      ]
+      : []
+
+  const staticIdentity = getIdentityAnchor()
+  logForDebugging(
+    `[agency:L1-L2:fallback] custom_prompt=${customSystemPrompt !== undefined} static_present=${staticIdentity.length > 0} agency_blocks=${agencyPromptBlocks.length} has_static=${staticIdentity.length > 0 && agencyPromptBlocks.includes(staticIdentity)} has_wake=${agencyPromptBlocks.some(block => block.startsWith('[T='))}`,
+  )
+
   const systemPrompt = asSystemPrompt([
     ...(customSystemPrompt !== undefined
       ? [customSystemPrompt]
       : defaultSystemPrompt),
     ...(appendSystemPrompt ? [appendSystemPrompt] : []),
+    ...agencyPromptBlocks,
   ])
 
   // Strip in-progress assistant message (stop_reason === null) — same guard
@@ -163,10 +181,10 @@ export async function buildSideQuestionFallbackParams({
     getAppState,
     setAppState,
     messages: forkContextMessages,
-    setInProgressToolUseIDs: () => {},
-    setResponseLength: () => {},
-    updateFileHistoryState: () => {},
-    updateAttributionState: () => {},
+    setInProgressToolUseIDs: () => { },
+    setResponseLength: () => { },
+    updateFileHistoryState: () => { },
+    updateAttributionState: () => { },
   }
 
   return {

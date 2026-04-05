@@ -1,3 +1,6 @@
+import { initAgency } from '../agency/index.js'
+import { startKeepAlive } from '../agency/keepalive.js'
+import { initAgencyStateUpdater } from '../agency/stateUpdater.js'
 import { profileCheckpoint } from '../utils/startupProfiler.js'
 import '../bootstrap/state.js'
 import '../utils/config.js'
@@ -211,6 +214,14 @@ export const init = memoize(async (): Promise<void> => {
         duration_ms: Date.now() - scratchpadStart,
       })
     }
+
+    // Initialize agency runtime and background hooks
+    await initAgency()
+    initAgencyStateUpdater()
+    const stopKeepAlive = startKeepAlive()
+    registerCleanup(async () => {
+      stopKeepAlive()
+    })
 
     logForDiagnosticsNoPII('info', 'init_completed', {
       duration_ms: Date.now() - initStartTime,

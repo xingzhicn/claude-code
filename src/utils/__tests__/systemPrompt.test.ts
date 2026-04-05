@@ -1,5 +1,36 @@
-import { describe, expect, test } from "bun:test";
+import { beforeEach, describe, expect, mock, test } from "bun:test";
+import { getSystemPrompt } from "../../constants/prompts";
 import { buildEffectiveSystemPrompt } from "../systemPrompt";
+
+mock.module("../../agency/index.js", () => ({
+  getIdentityAnchor: () => "STATIC_CORE_IDENTITY",
+  getWakeContext: () => "WAKE_CONTEXT",
+}));
+
+mock.module("../../commands.js", () => ({
+  getSkillToolCommands: async () => [],
+}));
+
+mock.module("../../bootstrap/state.js", () => ({
+  getIsNonInteractiveSession: () => false,
+}));
+
+mock.module("../../utils/settings/settings.js", () => ({
+  getInitialSettings: () => ({}),
+}));
+
+mock.module("../../utils/model/model.js", () => ({
+  getCanonicalName: () => "Claude Sonnet 4.6",
+  getMarketingNameForModel: () => "Claude Sonnet 4.6",
+}));
+
+mock.module("../../utils/embeddedTools.js", () => ({
+  hasEmbeddedSearchTools: () => false,
+}));
+
+mock.module("../..//services/analytics/growthbook.js", () => ({
+  getFeatureValue_CACHED_MAY_BE_STALE: () => true,
+}));
 
 const defaultPrompt = ["You are a helpful assistant.", "Follow instructions."];
 
@@ -15,9 +46,17 @@ function buildPrompt(overrides: Record<string, unknown> = {}) {
 }
 
 describe("buildEffectiveSystemPrompt", () => {
+  beforeEach(() => {
+    process.env.CLAUDE_CODE_COORDINATOR_MODE = undefined;
+  });
+
   test("returns default system prompt when no overrides", () => {
     const result = buildPrompt();
-    expect(Array.from(result)).toEqual(defaultPrompt);
+    expect(Array.from(result)).toEqual([
+      ...defaultPrompt,
+      "STATIC_CORE_IDENTITY",
+      "WAKE_CONTEXT",
+    ]);
   });
 
   test("overrideSystemPrompt replaces everything", () => {
@@ -30,21 +69,30 @@ describe("buildEffectiveSystemPrompt", () => {
     expect(Array.from(result)).toEqual(["custom"]);
   });
 
-  test("appendSystemPrompt is appended after main prompt", () => {
+  test("appendSystemPrompt is appended before agency blocks", () => {
     const result = buildPrompt({ appendSystemPrompt: "appended" });
-    expect(Array.from(result)).toEqual([...defaultPrompt, "appended"]);
+    expect(Array.from(result)).toEqual([
+      ...defaultPrompt,
+      "appended",
+      "STATIC_CORE_IDENTITY",
+      "WAKE_CONTEXT",
+    ]);
   });
 
-  test("agent definition replaces default prompt", () => {
+  test("agent definition still appends agency blocks", () => {
     const agentDef = {
       getSystemPrompt: () => "agent prompt",
       agentType: "custom",
     } as any;
     const result = buildPrompt({ mainThreadAgentDefinition: agentDef });
-    expect(Array.from(result)).toEqual(["agent prompt"]);
+    expect(Array.from(result)).toEqual([
+      "agent prompt",
+      "STATIC_CORE_IDENTITY",
+      "WAKE_CONTEXT",
+    ]);
   });
 
-  test("agent definition with append combines both", () => {
+  test("agent definition with append keeps agency blocks", () => {
     const agentDef = {
       getSystemPrompt: () => "agent prompt",
       agentType: "custom",
@@ -53,7 +101,12 @@ describe("buildEffectiveSystemPrompt", () => {
       mainThreadAgentDefinition: agentDef,
       appendSystemPrompt: "extra",
     });
-    expect(Array.from(result)).toEqual(["agent prompt", "extra"]);
+    expect(Array.from(result)).toEqual([
+      "agent prompt",
+      "extra",
+      "STATIC_CORE_IDENTITY",
+      "WAKE_CONTEXT",
+    ]);
   });
 
   test("override takes precedence over agent and custom", () => {
@@ -84,5 +137,15 @@ describe("buildEffectiveSystemPrompt", () => {
       appendSystemPrompt: "extra",
     });
     expect(Array.from(result)).toEqual(["custom", "extra"]);
+  });
+
+  test("default path appends static identity", () => {
+    const result = buildPrompt();
+    expect(Array.from(result)).toContain("STATIC_CORE_IDENTITY");
+  });
+
+  test("default path appends wake context", () => {
+    const result = buildPrompt();
+    expect(Array.from(result)).toContain("WAKE_CONTEXT");
   });
 });

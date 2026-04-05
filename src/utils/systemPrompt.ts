@@ -1,11 +1,16 @@
 import { feature } from 'bun:bundle'
 import {
+  getIdentityAnchor,
+  getWakeContext,
+} from '../agency/index.js'
+import {
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
   logEvent,
 } from '../services/analytics/index.js'
 import type { ToolUseContext } from '../Tool.js'
 import type { AgentDefinition } from '../tools/AgentTool/loadAgentsDir.js'
 import { isBuiltInAgent } from '../tools/AgentTool/loadAgentsDir.js'
+import { logForDebugging } from './debug.js'
 import { isEnvTruthy } from './envUtils.js'
 import { asSystemPrompt, type SystemPrompt } from './systemPromptType.js'
 
@@ -23,6 +28,25 @@ const proactiveModule =
 
 function isProactiveActive_SAFE_TO_CALL_ANYWHERE(): boolean {
   return proactiveModule?.isProactiveActive() ?? false
+}
+
+function buildAgencyPromptBlocks(customSystemPrompt: string | undefined): string[] {
+  const agencyPromptBlocks =
+    customSystemPrompt === undefined
+      ? [
+        ...((() => {
+          const wakeContext = getWakeContext()
+          return wakeContext ? [wakeContext] : []
+        })()),
+      ]
+      : []
+
+  const staticIdentity = getIdentityAnchor()
+  logForDebugging(
+    `[agency:L1-L2:system-prompt] custom_prompt=${customSystemPrompt !== undefined} static_present=${staticIdentity.length > 0} agency_blocks=${agencyPromptBlocks.length} has_static=${staticIdentity.length > 0 && agencyPromptBlocks.includes(staticIdentity)} has_wake=${agencyPromptBlocks.some(block => block.startsWith('[T='))}`,
+  )
+
+  return agencyPromptBlocks
 }
 
 /**
@@ -56,6 +80,8 @@ export function buildEffectiveSystemPrompt({
   if (overrideSystemPrompt) {
     return asSystemPrompt([overrideSystemPrompt])
   }
+
+  const agencyPromptBlocks = buildAgencyPromptBlocks(customSystemPrompt)
   // Coordinator mode: use coordinator prompt instead of default
   // Use inline env check instead of coordinatorModule to avoid circular
   // dependency issues during test module loading.
@@ -71,14 +97,15 @@ export function buildEffectiveSystemPrompt({
     return asSystemPrompt([
       getCoordinatorSystemPrompt(),
       ...(appendSystemPrompt ? [appendSystemPrompt] : []),
+      ...agencyPromptBlocks,
     ])
   }
 
   const agentSystemPrompt = mainThreadAgentDefinition
     ? isBuiltInAgent(mainThreadAgentDefinition)
       ? mainThreadAgentDefinition.getSystemPrompt({
-          toolUseContext: { options: toolUseContext.options },
-        })
+        toolUseContext: { options: toolUseContext.options },
+      })
       : mainThreadAgentDefinition.getSystemPrompt()
     : undefined
 
@@ -109,6 +136,7 @@ export function buildEffectiveSystemPrompt({
       ...defaultSystemPrompt,
       `\n# Custom Agent Instructions\n${agentSystemPrompt}`,
       ...(appendSystemPrompt ? [appendSystemPrompt] : []),
+      ...agencyPromptBlocks,
     ])
   }
 
@@ -119,5 +147,6 @@ export function buildEffectiveSystemPrompt({
         ? [customSystemPrompt]
         : defaultSystemPrompt),
     ...(appendSystemPrompt ? [appendSystemPrompt] : []),
+    ...agencyPromptBlocks,
   ])
 }
