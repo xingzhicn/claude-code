@@ -21,6 +21,7 @@ const result = await Bun.build({
     splitting: true,
     define: getMacroDefines(),
     features,
+    sourcemap: "external",
 });
 
 if (!result.success) {
@@ -53,3 +54,26 @@ for (const file of files) {
 console.log(
     `Bundled ${result.outputs.length} files to ${outdir}/ (patched ${patched} for Node.js compat)`,
 );
+
+// Step 4: Copy ripgrep vendor binaries
+import { cpSync, existsSync } from "fs";
+const rgSrc = new URL("./node_modules/@anthropic-ai/claude-agent-sdk/vendor/ripgrep", import.meta.url).pathname;
+const rgDst = join(outdir, "vendor/ripgrep");
+if (existsSync(rgSrc)) {
+    cpSync(rgSrc, rgDst, { recursive: true });
+    console.log("Copied ripgrep vendor binaries to dist/vendor/ripgrep");
+} else {
+    // fallback: search in .bun cache
+    const { readdirSync } = await import("fs");
+    const bunCache = new URL("./node_modules/.bun", import.meta.url).pathname;
+    if (existsSync(bunCache)) {
+        const entries = readdirSync(bunCache).filter(e => e.includes("claude-agent-sdk"));
+        if (entries[0]) {
+            const fallbackSrc = join(bunCache, entries[0], "node_modules/@anthropic-ai/claude-agent-sdk/vendor/ripgrep");
+            if (existsSync(fallbackSrc)) {
+                cpSync(fallbackSrc, rgDst, { recursive: true });
+                console.log("Copied ripgrep vendor binaries (from .bun cache) to dist/vendor/ripgrep");
+            }
+        }
+    }
+}

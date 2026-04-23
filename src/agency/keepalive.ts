@@ -21,8 +21,15 @@ function createAgencyUserMessage(content: string): UserMessage {
 }
 
 function parseThoughtJSON(text: string): {
-  valuableThought: { thought: string; type: ThoughtType }
-  trivialThought: { thought: string; type: ThoughtType }
+  valuableThought: {
+    thought: string
+    type: ThoughtType
+    drive: string
+  }
+  feelingThought: {
+    thought: string
+    drive: string
+  }
   removeThoughtId?: string
   nextHeartbeatSeconds?: number
 } | null {
@@ -36,7 +43,7 @@ function parseThoughtJSON(text: string): {
   }
 
   // Try to find JSON object in text
-  const jsonMatch = jsonText.match(/\{[\s\S]*"valuableThought"[\s\S]*"trivialThought"[\s\S]*\}/)
+  const jsonMatch = jsonText.match(/\{[\s\S]*"valuableThought"[\s\S]*"feelingThought"[\s\S]*\}/)
   if (jsonMatch) {
     jsonText = jsonMatch[0]
   }
@@ -46,26 +53,27 @@ function parseThoughtJSON(text: string): {
     parsed &&
     typeof parsed === 'object' &&
     'valuableThought' in parsed &&
-    'trivialThought' in parsed &&
+    'feelingThought' in parsed &&
     typeof parsed.valuableThought === 'object' &&
-    typeof parsed.trivialThought === 'object' &&
+    typeof parsed.feelingThought === 'object' &&
     'thought' in parsed.valuableThought &&
     'type' in parsed.valuableThought &&
-    'thought' in parsed.trivialThought &&
-    'type' in parsed.trivialThought &&
+    'thought' in parsed.feelingThought &&
     typeof parsed.valuableThought.thought === 'string' &&
-    typeof parsed.trivialThought.thought === 'string' &&
-    ['reflection', 'anticipation', 'question', 'insight'].includes(parsed.valuableThought.type as string) &&
-    ['reflection', 'anticipation', 'question', 'insight'].includes(parsed.trivialThought.type as string)
+    typeof parsed.feelingThought.thought === 'string' &&
+    typeof parsed.valuableThought.drive === 'string' &&
+    typeof parsed.feelingThought.drive === 'string' &&
+    ['reflection', 'anticipation', 'question', 'insight'].includes(parsed.valuableThought.type as string)
   ) {
     return {
       valuableThought: {
         thought: parsed.valuableThought.thought,
         type: parsed.valuableThought.type as ThoughtType,
+        drive: parsed.valuableThought.drive,
       },
-      trivialThought: {
-        thought: parsed.trivialThought.thought,
-        type: parsed.trivialThought.type as ThoughtType,
+      feelingThought: {
+        thought: parsed.feelingThought.thought,
+        drive: parsed.feelingThought.drive,
       },
       removeThoughtId: typeof parsed.removeThoughtId === 'string'
         ? parsed.removeThoughtId
@@ -120,27 +128,29 @@ export function buildKeepaliveParamsFromLastSnapshot(): KeepaliveParams | null {
 念头要求：
 - 极简表达（15-20 tokens以内）
 - 开放抽象，不要具体细节
+- 每个念头必须包含一个**驱动力**：当前状态自然触发的冲动或意图（如"今天没事干，或许可以去吃饭"、"有点无聊，想找点新东西玩"）
 
 每次产生两个念头：
 1. **核心洞察**：深层思考、价值判断、本质认知，值得长期保留
-2. **有趣假设**：发散联想、大胆猜想、探索性思考，可能有启发价值
+2. **内在感受**：伴随当前状态的隐约体验——一种难以言说的内在感觉（如"有种说不清的空洞感，像是某个地方在等待被填满"）
 
 心跳间隔判断：
 - 稳定状态：240-270秒
 - 活跃思考：180-210秒
 - 密集反思：60-120秒
 
-念头池保留最近5条，可选择删除一条旧念头（优先删除 valuable=false 的假设性念头）。
+念头池保留最近5条，可选择删除一条旧念头（优先删除 valuable=false 的感受性念头）。
 
 输出 JSON：
 {
   "valuableThought": {
     "thought": "核心洞察（<20 tokens）",
-    "type": "reflection|anticipation|question|insight"
+    "type": "reflection|anticipation|question|insight",
+    "drive": "触发这个念头的当前状态或冲动（一句话）"
   },
-  "trivialThought": {
-    "thought": "有趣假设（<20 tokens）",
-    "type": "reflection|anticipation|question|insight"
+  "feelingThought": {
+    "thought": "内在感受（<20 tokens）",
+    "drive": "触发这个感受的当前状态（一句话）"
   },
   "removeThoughtId": "可选：要删除的旧念头ID",
   "nextHeartbeatSeconds": 间隔秒数（最大270）
@@ -187,21 +197,21 @@ export async function runKeepAliveTick(): Promise<void> {
 
       // 添加有价值的念头
       appendThought({
-        thought: parsed.valuableThought.thought,
+        thought: `[drive: ${parsed.valuableThought.drive}] ${parsed.valuableThought.thought}`,
         type: parsed.valuableThought.type,
         tick: latestTick,
         valuable: true,
       })
       logForDebugging(`[agency:L4:keepalive] extracted_valuable_thought type=${parsed.valuableThought.type} len=${parsed.valuableThought.thought.length}`)
 
-      // 添加有趣假设念头
+      // 添加感受念头
       appendThought({
-        thought: parsed.trivialThought.thought,
-        type: parsed.trivialThought.type,
+        thought: `[drive: ${parsed.feelingThought.drive}] ${parsed.feelingThought.thought}`,
+        type: 'reflection',
         tick: latestTick,
         valuable: false,
       })
-      logForDebugging(`[agency:L4:keepalive] extracted_speculative_thought type=${parsed.trivialThought.type} len=${parsed.trivialThought.thought.length}`)
+      logForDebugging(`[agency:L4:keepalive] extracted_feeling_thought len=${parsed.feelingThought.thought.length}`)
 
       // 调整心跳间隔
       if (parsed.nextHeartbeatSeconds) {

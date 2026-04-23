@@ -6,10 +6,14 @@ import { registerPostSamplingHook } from 'src/utils/hooks/postSamplingHooks.js'
 
 export type ThoughtType = 'reflection' | 'anticipation' | 'question' | 'insight'
 
+export type ThoughtEmotion = 'neutral' | 'curious' | 'anxious' | 'determined' | 'resigned'
+
 export type AgencyThought = {
   id: string
   thought: string
   type: ThoughtType
+  emotion: ThoughtEmotion
+  weight: number  // no upper limit; starts at 50
   tick: number
   used: boolean
   valuable: boolean
@@ -19,7 +23,8 @@ type ThoughtPoolFile = {
   thoughts: AgencyThought[]
 }
 
-const MAX_THOUGHTS = 5
+const MAX_THOUGHTS = 10
+const HIDDEN_THOUGHTS_COUNT = 5
 const MAX_UNUSED_AGE_TICKS = 5
 
 let thoughtPool: AgencyThought[] = []
@@ -57,12 +62,14 @@ export async function initThoughtPool(): Promise<void> {
 }
 
 export function appendThought(
-  thought: Omit<AgencyThought, 'id' | 'used'>,
+  thought: Omit<AgencyThought, 'id' | 'used' | 'weight' | 'emotion'> & { emotion?: ThoughtEmotion; weight?: number },
 ): void {
   const nextThought: AgencyThought = {
     id: `${thought.tick}-${thoughtPool.length + 1}`,
     thought: thought.thought,
     type: thought.type,
+    emotion: thought.emotion ?? 'neutral',
+    weight: thought.weight ?? 50,
     tick: thought.tick,
     used: false,
     valuable: thought.valuable,
@@ -70,7 +77,7 @@ export function appendThought(
   thoughtPool = [...thoughtPool, nextThought].slice(-MAX_THOUGHTS)
   persistThoughtPool()
   logForDebugging(
-    `[agency:L5:thought-pool] appended type=${nextThought.type} valuable=${nextThought.valuable} tick=${nextThought.tick} size=${thoughtPool.length}`,
+    `[agency:L5:thought-pool] appended type=${nextThought.type} emotion=${nextThought.emotion} weight=${nextThought.weight} tick=${nextThought.tick} size=${thoughtPool.length}`,
   )
 }
 
@@ -86,49 +93,54 @@ export function removeThought(thoughtId: string): void {
 }
 
 export function drainThoughtsForWakeContext(currentTick: number): string[] {
-  // 返回所有念头，不标记 used（让念头可以被多次读取）
   if (thoughtPool.length === 0) {
     return []
   }
-
   logForDebugging(
     `[agency:L5:thought-pool] drained count=${thoughtPool.length} tick=${currentTick}`,
   )
-  return thoughtPool.map(thought => `[thought:${thought.type}${thought.valuable ? '+' : '?'}] ${thought.thought}`)
+  // hide the HIDDEN_THOUGHTS_COUNT lowest-weight thoughts
+  const sorted = [...thoughtPool].sort((a, b) => b.weight - a.weight)
+  const visible = sorted.slice(0, Math.max(1, sorted.length - HIDDEN_THOUGHTS_COUNT))
+  return visible.map(t =>
+    `[thought:${t.type}|${t.emotion}|w=${Math.round(t.weight)}${t.valuable ? '+' : '?'}] ${t.thought}`,
+  )
 }
 
+const PROTECTED_TOP_N = 3
+
 export function pruneExpiredThoughts(currentTick: number): void {
-  // 优先删除 valuable=false 的念头
-  const trivialThoughts = thoughtPool.filter(t => !t.valuable)
-  const valuableThoughts = thoughtPool.filter(t => t.valuable)
+  if (thoughtPool.length === 0) return
 
-  // 如果超过 MAX_THOUGHTS，优先删除平庸念头
-  if (thoughtPool.length > MAX_THOUGHTS) {
-    const toRemove = thoughtPool.length - MAX_THOUGHTS
-    const removedTrivial = trivialThoughts.slice(0, toRemove)
-    thoughtPool = thoughtPool.filter(t => !removedTrivial.includes(t))
-    persistThoughtPool()
-    logForDebugging(
-      `[agency:L5:thought-pool] pruned_by_size removed=${toRemove} (trivial) size=${thoughtPool.length}`,
-    )
-    return
-  }
+  // sort by weight descending, top N are protected
+  const sorted = [...thoughtPool].sort((a, b) => b.weight - a.weight)
+  const protectedIds = new Set(sorted.slice(0, PROTECTED_TOP_N).map(t => t.id))
 
-  // 删除过期的念头（超过 MAX_UNUSED_AGE_TICKS）
-  const nextThoughtPool = thoughtPool.filter(thought => {
-    return currentTick - thought.tick <= MAX_UNUSED_AGE_TICKS
-  })
-
-  if (nextThoughtPool.length === thoughtPool.length) {
-    return
-  }
-
-  const removed = thoughtPool.length - nextThoughtPool.length
-  thoughtPool = nextThoughtPool
-  persistThoughtPool()
-  logForDebugging(
-    `[agency:L5:thought-pool] pruned_by_age removed=${removed} tick=${currentTick} size=${thoughtPool.length}`,
+  // decay protected thoughts by 10% instead of deleting
+  thoughtPool = thoughtPool.map(t =>
+    protectedIds.has(t.id) ? { ...t, weight: t.weight * 0.9 } : t,
   )
+
+  // remove age-expired thoughts (never remove protected)
+  const fresh = thoughtPool.filter(t => protectedIds.has(t.id) || currentTick - t.tick <= MAX_UNUSED_AGE_TICKS)
+  const removed = thoughtPool.length - fresh.length
+  if (removed > 0) {
+    thoughtPool = fresh
+    logForDebugging(`[agency:L5:thought-pool] pruned_by_age removed=${removed} tick=${currentTick} size=${thoughtPool.length}`)
+  }
+
+  // if over limit, drop lowest-weight non-protected thoughts
+  if (thoughtPool.length > MAX_THOUGHTS) {
+    const protectedThoughts = thoughtPool.filter(t => protectedIds.has(t.id))
+    const unprotected = thoughtPool
+      .filter(t => !protectedIds.has(t.id))
+      .sort((a, b) => b.weight - a.weight)
+      .slice(0, MAX_THOUGHTS - protectedThoughts.length)
+    thoughtPool = [...protectedThoughts, ...unprotected]
+    logForDebugging(`[agency:L5:thought-pool] pruned_by_weight size=${thoughtPool.length}`)
+  }
+
+  persistThoughtPool()
 }
 
 export function peekThoughtPool(): AgencyThought[] {
@@ -137,6 +149,12 @@ export function peekThoughtPool(): AgencyThought[] {
 
 export function __resetThoughtPoolForTests(): void {
   thoughtPool = []
+}
+
+const EMOTIONS: ThoughtEmotion[] = ['neutral', 'curious', 'anxious', 'determined', 'resigned']
+
+function pickRandomEmotion(): ThoughtEmotion {
+  return EMOTIONS[Math.floor(Math.random() * EMOTIONS.length)]!
 }
 
 export const extractThoughtsHook = async (context: REPLHookContext): Promise<void> => {
@@ -171,14 +189,22 @@ export const extractThoughtsHook = async (context: REPLHookContext): Promise<voi
   }
 
   if (thinkingContent.trim()) {
-    // We only want to preserve a small summary of the thought, not hundreds of lines.
-    // For now we just take the last 200 chars or summary if needed. 
-    // Ideally the model produces succinct thoughts. 
     const abstract = thinkingContent.trim().slice(-200)
+    // upsert: if identical content exists, update tick and emotion; otherwise append
+    const existing = thoughtPool.find(t => t.thought === abstract)
+    if (existing) {
+      thoughtPool = thoughtPool.map(t =>
+        t.id === existing.id ? { ...t, tick: currentTick, emotion: pickRandomEmotion() } : t,
+      )
+      persistThoughtPool()
+      return
+    }
     appendThought({
       thought: abstract,
       type: 'insight',
+      emotion: pickRandomEmotion(),
       tick: currentTick,
+      valuable: false,
     })
   }
 }
